@@ -12,11 +12,18 @@ class MysqlConfig:
     # port = 3306
     # coding = 'utf8'
 
-    host = '127.0.0.1'
+    # host = '127.0.0.1'
+    # dbname = 'chanlun'
+    # user = 'root'
+    # password = '123456'
+    # port = 3307
+    # coding = 'utf8'
+
+    host = 'localhost'
     dbname = 'chanlun'
     user = 'root'
-    password = '123456'
-    port = 3307
+    password = 'root'
+    port = 3306
     coding = 'utf8'
 
 # # 对于每个全局变量，都需要定义get_value和set_value接口

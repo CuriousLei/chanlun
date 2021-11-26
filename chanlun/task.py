@@ -271,7 +271,7 @@ def cal_zh(symbol, freq, component_type):
                     component_type))
 
 
-def cal_bs_point(symbol, freq):
+def cl_trend(symbol, freq):
     """计算趋势，并写入cl_trend数据库表
 
         :param symbol: 股票代码
@@ -280,33 +280,223 @@ def cal_bs_point(symbol, freq):
     return None
 
 
+def rebuild_bs_point(symbol, freq):
+    """计算买卖点，并写入cl_point_result数据库表
+
+        :param symbol: 股票代码
+        :param freq: K线级别
+    """
+    # 买卖点强依赖中枢
+    hubs = db.get_all(
+        'select * from cl_omphalos where stock_id=\'%s\' and level=\'%s\' order by id' % (symbol, freq))
+    if not hubs:
+        return None
+    for i in range(1, len(hubs) - 1):
+        if hubs[i][6] > hubs[i - 1][5] and hubs[i][6] > hubs[i + 1][5]:
+            raw_arrived_bi_list = db.get_all(
+                'select * from cl_stroke where stock_id=\'%s\' and level=\'%s\' and start_datetime>=\'%s\' and start_datetime<=\'%s\'' % (
+                    symbol, freq, hubs[i][3], hubs[i + 1][3]))
+            up_pos = None
+            up_dt = None
+            for bi in raw_arrived_bi_list:
+                if bi[5] == 'up':
+                    if not up_pos:
+                        up_pos = bi[9]
+                        up_dt = bi[7]
+                    else:
+                        if bi[9] > up_pos:
+                            up_pos = bi[9]
+                            up_dt = bi[7]
+            db.insert(
+                "insert into cl_point_result(stock_id, level, point, type, evaluation_time, valid, high, low) values('%s','%s','%s','%s','%s','%s','%s','%s')" % (
+                    symbol, freq, up_dt, 'S1', hubs[i + 1][4], 1, up_pos, 0))
+            print(up_dt)
+            print(up_pos)
+            print("=========S1=========")
+            up_pos2 = None
+            up_dt2 = None
+            i = -1
+            for bi in raw_arrived_bi_list:
+                if i >= 0:
+                    i += 1
+                if bi[7] == up_dt:
+                    i = 0
+                if i == 2:
+                    up_pos2 = bi[9]
+                    up_dt2 = bi[7]
+                    break
+            print(up_dt2)
+            print(up_pos2)
+            print("=========S2=========")
+            db.insert(
+                "insert into cl_point_result(stock_id, level, point, type, evaluation_time, valid, high, low) values('%s','%s','%s','%s','%s','%s','%s','%s')" % (
+                    symbol, freq, up_dt2, 'S2', hubs[i + 1][4], 1, up_pos2, 0))
+        if hubs[i][5] < hubs[i - 1][6] and hubs[i][5] < hubs[i + 1][6]:
+            raw_arrived_bi_list = db.get_all(
+                'select * from cl_stroke where stock_id=\'%s\' and level=\'%s\' and start_datetime>=\'%s\' and start_datetime<=\'%s\'' % (
+                    symbol, freq, hubs[i][3], hubs[i + 1][3]))
+            up_pos = None
+            up_dt = None
+            for bi in raw_arrived_bi_list:
+                if bi[5] == 'down':
+                    if not up_pos:
+                        up_pos = bi[10]
+                        up_dt = bi[7]
+                    else:
+                        if bi[10] < up_pos:
+                            up_pos = bi[10]
+                            up_dt = bi[7]
+            # db.insert(
+            #     'insert into cl_point(stock_id, level, point, type, evaluation_time, valid, high, low) values(\'%s\',\'%s\',\'%s\',\'%s\',%s,%s,%s,%s,%s,%s,\'%s\')' % (
+            #         symbol, freq, up_dt, 'B1', hubs[2][4], 1, up_pos, 0))
+            print(up_dt)
+            print(up_pos)
+            print("=========B1=========")
+            db.insert(
+                "insert into cl_point_result(stock_id, level, point, type, evaluation_time, valid, high, low) values('%s','%s','%s','%s','%s','%s','%s','%s')" % (
+                    symbol, freq, up_dt, 'B1', hubs[i + 1][4], 1, 0, up_pos))
+            up_pos2 = None
+            up_dt2 = None
+            i = -1
+            for bi in raw_arrived_bi_list:
+                if i >= 0:
+                    i += 1
+                if bi[7] == up_dt:
+                    i = 0
+                if i == 2:
+                    up_pos2 = bi[10]
+                    up_dt2 = bi[7]
+                    break
+            print(up_dt2)
+            print(up_pos2)
+            print("=========B2=========")
+            db.insert(
+                "insert into cl_point_result(stock_id, level, point, type, evaluation_time, valid, high, low) values('%s','%s','%s','%s','%s','%s','%s','%s')" % (
+                    symbol, freq, up_dt2, 'B2', hubs[i + 1][4], 1, 0, up_pos2))
+
+
 def cal_bs_point(symbol, freq):
     """计算买卖点，并写入cl_point_result数据库表
 
         :param symbol: 股票代码
         :param freq: K线级别
     """
-    return None
+    # 买卖点强依赖中枢
+    hubs = db.get_all(
+        'select * from cl_omphalos where stock_id=\'%s\' and level=\'%s\' order by id desc limit 3' % (symbol, freq))
+    hubs = list(hubs)
+    hubs.reverse()
+    if len(hubs) >= 3:
+        if hubs[1][6] > hubs[0][5] and hubs[1][6] > hubs[2][5]:
+            raw_arrived_bi_list = db.get_all(
+                'select * from cl_stroke where stock_id=\'%s\' and level=\'%s\' and start_datetime>=\'%s\' and start_datetime<=\'%s\'' % (
+                    symbol, freq, hubs[1][3], hubs[2][3]))
+            up_pos = None
+            up_dt = None
+            for bi in raw_arrived_bi_list:
+                if bi[5] == 'up':
+                    if not up_pos:
+                        up_pos = bi[9]
+                        up_dt = bi[7]
+                    else:
+                        if bi[9] > up_pos:
+                            up_pos = bi[9]
+                            up_dt = bi[7]
+            db.insert(
+                "insert into cl_point_result(stock_id, level, point, type, evaluation_time, valid, high, low) values('%s','%s','%s','%s','%s','%s','%s','%s')" % (
+                    symbol, freq, up_dt, 'S1', hubs[2][4], 1, up_pos, 0))
+            print(up_dt)
+            print(up_pos)
+            print("=========S1=========")
+            up_pos2 = None
+            up_dt2 = None
+            i = -1
+            for bi in raw_arrived_bi_list:
+                if i >= 0:
+                    i += 1
+                if bi[7] == up_dt:
+                    i = 0
+                if i == 2:
+                    up_pos2 = bi[9]
+                    up_dt2 = bi[7]
+                    break
+            print(up_dt2)
+            print(up_pos2)
+            print("=========S2=========")
+            db.insert(
+                "insert into cl_point_result(stock_id, level, point, type, evaluation_time, valid, high, low) values('%s','%s','%s','%s','%s','%s','%s','%s')" % (
+                    symbol, freq, up_dt2, 'S2', hubs[2][4], 1, up_pos2, 0))
+
+        if hubs[1][5] < hubs[0][6] and hubs[1][5] < hubs[2][6]:
+            raw_arrived_bi_list = db.get_all(
+                'select * from cl_stroke where stock_id=\'%s\' and level=\'%s\' and start_datetime>=\'%s\' and start_datetime<=\'%s\'' % (
+                    symbol, freq, hubs[1][3], hubs[2][3]))
+            up_pos = None
+            up_dt = None
+            for bi in raw_arrived_bi_list:
+                if bi[5] == 'down':
+                    if not up_pos:
+                        up_pos = bi[10]
+                        up_dt = bi[7]
+                    else:
+                        if bi[10] > up_pos:
+                            up_pos = bi[10]
+                            up_dt = bi[7]
+            print(up_dt)
+            print(up_pos)
+            print("=========B1=========")
+            db.insert(
+                "insert into cl_point_result(stock_id, level, point, type, evaluation_time, valid, high, low) values('%s','%s','%s','%s','%s','%s','%s','%s')" % (
+                    symbol, freq, up_dt, 'B1', hubs[2][4], 1, 0, up_pos))
+            up_pos2 = None
+            up_dt2 = None
+            i = -1
+            for bi in raw_arrived_bi_list:
+                if i >= 0:
+                    i += 1
+                if bi[7] == up_dt:
+                    i = 0
+                if i == 2:
+                    up_pos2 = bi[10]
+                    up_dt2 = bi[7]
+                    break
+            print(up_dt2)
+            print(up_pos2)
+            print("=========B2=========")
+            db.insert(
+                "insert into cl_point_result(stock_id, level, point, type, evaluation_time, valid, high, low) values('%s','%s','%s','%s','%s','%s','%s','%s')" % (
+                    symbol, freq, up_dt2, 'B2', hubs[2][4], 1, 0, up_pos2))
 
 
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
     symbol = '600809.XSHG'
-    # freq = '60m'
-    freq = '1d'
+    freq = '60m'
+    # freq = '1d'
 
     # 计算K线合并
     # cal_kx(symbol, freq)
-    print('k线合并计算完成')
+    # print('k线合并计算完成')
 
     # 计算分型
-    cal_fx(symbol, freq)
-    print('分型计算完成')
+    # cal_fx(symbol, freq)
+    # print('分型计算完成')
 
     # 计算笔
-    cal_bi(symbol, freq)
-    print('笔计算完成')
+    # cal_bi(symbol, freq)
+    # print('笔计算完成')
 
     # 计算中枢
-    cal_zh(symbol, freq, 'bi')
-    print('中枢计算完成')
+    # cal_zh(symbol, freq, 'bi')
+    # print('中枢计算完成')
+
+    # 计算趋势
+    # cl_trend(symbol, freq)
+    # print('趋势计算完成')
+
+    # 计算买卖点
+    # cal_bs_point(symbol, freq)
+    # print('买卖点计算完成')
+
+    # 测试买卖点
+    # rebuild_bs_point(symbol, freq)

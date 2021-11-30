@@ -13,7 +13,7 @@ from pyecharts.options import ComponentTitleOpts
 from chanlun.config.mysql_config import MysqlConfig
 from chanlun.utils.kline_generator import KlineGenerator
 from chanlun.enums import Mark, Direction, Operate
-from chanlun.objects import BI, FakeBI, FX, RawBar, NewBar, Event, Hub, Line, Seq, SeqFX
+from chanlun.objects import BI, FakeBI, FX, RawBar, NewBar, Event, Hub, Line, Seq, SeqFX, Point
 from chanlun.utils.echarts_plot import kline_pro
 from chanlun.utils.db_connector import MysqlUtils
 
@@ -504,7 +504,7 @@ def check_line(seqs: List[Seq]):
     try:
         if fx_a.mark == 'D':
             direction = 'up'
-            fxs_b = [x for x in up_fxs if x.mark == 'G' and x.dt > fx_a.dt and x.fx > fx_a.fx]
+            fxs_b = [x for x in down_fxs if x.mark == 'G' and x.dt > fx_a.dt and x.fx > fx_a.fx]
             if not fxs_b:
                 return None, seqs
             fx_b = fxs_b[0]
@@ -513,7 +513,7 @@ def check_line(seqs: List[Seq]):
                     fx_b = fx
         elif fx_a.mark == 'G':
             direction = 'down'
-            fxs_b = [x for x in down_fxs if x.mark == 'D' and x.dt > fx_a.dt and x.fx < fx_a.fx]
+            fxs_b = [x for x in up_fxs if x.mark == 'D' and x.dt > fx_a.dt and x.fx < fx_a.fx]
             if not fxs_b:
                 return None, seqs
             fx_b = fxs_b[0]
@@ -536,7 +536,7 @@ def check_line(seqs: List[Seq]):
         # 计算笔的相关属性
         power_price = round(abs(fx_b.fx - fx_a.fx), 2)
 
-        # 生成Line对象，有问题！！！！
+        # 生成Line对象
         if direction == 'up':
             start_dt = fx_a.elements[1].start_dt if fx_a.direction == 'up' else fx_a.elements[1].end_dt
             end_dt = fx_b.elements[1].start_dt if fx_b.direction == 'down' else fx_b.elements[1].end_dt
@@ -554,7 +554,7 @@ def check_line(seqs: List[Seq]):
         return None, seqs
 
 
-def generate_hub(hubs: List[Hub], bi_list: List[BI]):
+def generate_hub(hubs: List[Hub], bi_list: List[BI], point_list: List[Point]):
     """根据笔列表生成中枢，每次生成一个中枢
 
     :param hubs: 中枢列表
@@ -562,18 +562,18 @@ def generate_hub(hubs: List[Hub], bi_list: List[BI]):
     :return: hubs, bi_list: 更新后的中枢列表和笔列表
     """
     if len(bi_list) < 3:
-        return hubs, bi_list
+        return hubs, bi_list, point_list
 
     # 获取上一个中枢或者第一个中枢
     if not hubs or len(hubs) < 1:
-        last_hub, bi_list = check_hub(bi_list)
+        last_hub, bi_list = check_hub(bi_list, None)
         if last_hub:
             hubs.append(last_hub)
     else:
         last_hub = hubs[-1]
 
     if not last_hub:
-        return hubs, bi_list
+        return hubs, bi_list, point_list
 
     # 上一个中枢延伸
     pos = 0
@@ -584,6 +584,20 @@ def generate_hub(hubs: List[Hub], bi_list: List[BI]):
             pos += 1
             continue
         if last_hub.ZD > bi_list[pos].high or last_hub.ZG < bi_list[pos].low:
+            if last_hub.ZD > bi_list[pos].high:
+                # 中枢结束，形成三卖
+                fx = bi_list[pos].fx_b if bi_list[pos].direction == 'up' else bi_list[pos].fx_a
+                if len(point_list) == 0 or (len(point_list) > 0 and point_list[-1].dt < fx.dt):
+                    point_list.append(
+                        Point(id=-1, symbol=fx.symbol, freq=fx.freq, dt=fx.dt, type='S3',
+                              high=fx.elements[1].high, low=fx.elements[1].low))
+            elif last_hub.ZG < bi_list[pos].low:
+                # 中枢结束，形成三买
+                fx = bi_list[pos].fx_b if bi_list[pos].direction == 'down' else bi_list[pos].fx_a
+                if len(point_list) == 0 or (len(point_list) > 0 and point_list[-1].dt < fx.dt):
+                    point_list.append(
+                        Point(id=-1, symbol=fx.symbol, freq=fx.freq, dt=fx.dt, type='B3',
+                              high=fx.elements[1].high, low=fx.elements[1].low))
             break
         last_hub.elements.append(bi_list[pos])
         last_hub.GG = max([x.high for x in last_hub.elements])
@@ -592,27 +606,35 @@ def generate_hub(hubs: List[Hub], bi_list: List[BI]):
         pos += 2
 
     # 计算当前中枢
-    cur_hub, bi_list = check_hub(bi_list[pos:])
+    cur_hub, bi_list = check_hub([x for x in bi_list if x.fx_a.dt >= last_hub.elements[-1].fx_b.dt], last_hub)
     if cur_hub and not cur_hub.entry:
         cur_hub.entry = last_hub.leave
 
     if cur_hub:
         hubs.append(cur_hub)
 
-    return hubs, bi_list
+    return hubs, bi_list, point_list
 
 
-def check_hub(bi_list: List[BI]):
+def check_hub(bi_list: List[BI], last_hub):
     """输入一串笔，查找其中的第一个中枢
 
+    :param last_hub:
     :param bi_list: 笔列表
     :return: hub, bi_list: 查找到的中枢，和更新后的笔列表
     """
     start_idx = -1
-    for i in range(len(bi_list) - 2):
+    for i in range(len(bi_list) - 3):
         bi1 = bi_list[i]
         bi3 = bi_list[i + 2]
-        if min(bi1.high, bi3.high) > max(bi1.low, bi3.low):
+        zg = min(bi1.high, bi3.high)
+        zd = max(bi1.low, bi3.low)
+        if zg > zd:
+            # 检验中枢方向是否正确
+            if last_hub is not None:
+                if (bi1.direction == 'down' and zg < last_hub.ZG) or (bi1.direction == 'up' and zd > last_hub.ZD):
+                    continue
+            # 记录中枢开始位置
             start_idx = i
             break
     if start_idx < 0:
@@ -621,12 +643,14 @@ def check_hub(bi_list: List[BI]):
     bi1 = bi_list[start_idx]
     bi3 = bi_list[start_idx + 2]
     entry = None if start_idx == 0 else bi_list[start_idx - 1]
+    if entry is None and last_hub is not None:
+        entry = last_hub.elements[-1]
     leave = None if start_idx >= len(bi_list) - 3 else bi_list[start_idx + 3]
 
     hub = Hub(id=-1, symbol=bi1.symbol, freq=bi1.freq, ZG=min(bi1.high, bi3.high), ZD=max(bi1.low, bi3.low),
               GG=max(bi1.high, bi3.high), DD=min(bi1.low, bi3.low), entry=entry, leave=leave, elements=[bi1, bi3])
 
-    bi_list = [] if start_idx >= len(bi_list) - 3 else bi_list[start_idx + 4:]
+    bi_list = [x for x in bi_list if x.fx_a.dt >= hub.elements[-1].fx_b.dt]
 
     return hub, bi_list
 

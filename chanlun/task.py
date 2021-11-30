@@ -296,7 +296,7 @@ def cal_seq(symbol, freq):
                     seq.high, seq.low, seq.direction))
 
 
-def cal_xd(symbol, freq):
+def cal_xd_by_seq(symbol, freq):
     """计算线段，并写入cl_paragraph数据库表
 
         :param symbol: 股票代码
@@ -319,7 +319,7 @@ def cal_xd(symbol, freq):
     else:
         raw_arrived_seqs = db.get_all('select * from cl_sequence where stock_id=\'%s\' and level=\'%s\' and '
                                       'start_datetime>=\'%s\'' % (
-                                      symbol, freq, line_list[-1].fx_a.elements[0].start_dt))
+                                          symbol, freq, line_list[-1].fx_a.elements[0].start_dt))
     arrived_seqs = seq_transfer(raw_arrived_seqs, freq, symbol)
 
     # 生成线段
@@ -333,8 +333,10 @@ def cal_xd(symbol, freq):
 
         elements_str = line.seqs[0].start_dt.strftime('%Y-%m-%d %H:%M:%S') + ',' + line.seqs[-1].end_dt.strftime(
             '%Y-%m-%d %H:%M:%S')
-        fx_a_ids = str(line.fx_a.elements[0].id) + ',' + str(line.fx_a.elements[1].id) + ',' + str(line.fx_a.elements[2].id)
-        fx_b_ids = str(line.fx_b.elements[0].id) + ',' + str(line.fx_b.elements[1].id) + ',' + str(line.fx_b.elements[2].id)
+        fx_a_ids = str(line.fx_a.elements[0].id) + ',' + str(line.fx_a.elements[1].id) + ',' + str(
+            line.fx_a.elements[2].id)
+        fx_b_ids = str(line.fx_b.elements[0].id) + ',' + str(line.fx_b.elements[1].id) + ',' + str(
+            line.fx_b.elements[2].id)
         db.insert(
             'insert into cl_paragraph(stock_id, level, direction, start_datetime, end_datetime, high, low, elements, '
             'fx_a_ids, fx_b_ids) values(\'%s\',\'%s\',\'%s\',\'%s\',\'%s\',%s,%s,\'%s\',\'%s\',\'%s\')' % (
@@ -368,11 +370,12 @@ def cal_zh(symbol, freq, component_type):
 
     # 生成中枢
     bars = []
+    points = []
     for bar in arrived_bi_list:
         bars.append(bar)
-        hubs, bars = generate_hub(hubs, bars)
+        hubs, bars, points = generate_hub(hubs, bars, points)
 
-    # 写入数据库
+    # 中枢写入数据库
     for hub in hubs:
         if not hub:
             continue
@@ -389,6 +392,11 @@ def cal_zh(symbol, freq, component_type):
                 'entry_segment, leave_segment, type) values(\'%s\',\'%s\',\'%s\',\'%s\',%s,%s,%s,%s,%s,%s,\'%s\')' % (
                     symbol, freq, start_dt, end_dt, hub.ZD, hub.ZG, hub.GG, hub.DD, entry_id, leave_id,
                     component_type))
+    # 三类买卖点写入数据库
+    for point in points:
+        db.insert(
+            'insert into cl_point_result(stock_id, level, point, type, high, low) values(\'%s\',\'%s\',\'%s\',\'%s\','
+            '%s,%s)' % (symbol, freq, point.dt.strftime('%Y-%m-%d %H:%M:%S'), point.type, point.high, point.low))
 
 
 def cal_bs_point(symbol, freq):
@@ -409,7 +417,6 @@ def cal_bs_point(symbol, freq):
     return None
 
 
-# Press the green button in the gutter to run the script.
 if __name__ == '__main__':
     symbol = '600809.XSHG'
     freq = '60m'
@@ -435,6 +442,9 @@ if __name__ == '__main__':
     # cal_seq(symbol, freq)
     # print('标准特征序列计算完成')
 
-    # 计算线段
-    # cal_xd(symbol, freq)
-    # print('线段计算完成')
+    # 根据特征序列计算线段
+    cal_xd_by_seq(symbol, freq)
+
+    # 根据笔计算线段
+    # cal_xd_by_bi(symbol, freq)
+    print('线段计算完成')

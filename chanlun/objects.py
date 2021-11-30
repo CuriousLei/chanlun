@@ -134,6 +134,17 @@ class Hub:
     elements: List[BI] = None # 奇数位的笔
 
 @dataclass
+class Point:
+    """买卖点"""
+    id: int
+    symbol: str
+    freq: str
+    dt: datetime
+    type: str
+    high: float
+    low: float
+
+@dataclass
 class Signal:
     signal: str = None
 

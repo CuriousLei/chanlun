@@ -13,7 +13,7 @@ from pyecharts.options import ComponentTitleOpts
 from chanlun.config.mysql_config import MysqlConfig
 from chanlun.utils.kline_generator import KlineGenerator
 from chanlun.enums import Mark, Direction, Operate
-from chanlun.objects import BI, FakeBI, FX, RawBar, NewBar, Event, Hub
+from chanlun.objects import BI, FakeBI, FX, RawBar, NewBar, Event, Hub, Line, Seq, SeqFX
 from chanlun.utils.echarts_plot import kline_pro
 from chanlun.utils.db_connector import MysqlUtils
 
@@ -81,7 +81,7 @@ def remove_include(k1: NewBar, k2: NewBar, k3: RawBar):
         else:
             open_ = low
             close = high
-        vol = k2.vol + k3.vol
+        vol = None if k2.vol is None or k3.vol is None else k2.vol + k3.vol
         # 这里有一个隐藏Bug，len(k2.elements) 在一些及其特殊的场景下会有超大的数量，具体问题还没找到；
         # 临时解决方案是直接限定len(k2.elements)<=100
         elements = [x for x in k2.elements[:100] if x.dt != k3.dt] + [k3]
@@ -91,6 +91,41 @@ def remove_include(k1: NewBar, k2: NewBar, k3: RawBar):
     else:
         k4 = NewBar(symbol=k3.symbol, id=k3.id, freq=k3.freq, dt=k3.dt, open=k3.open,
                     close=k3.close, high=k3.high, low=k3.low, vol=k3.vol, elements=[k3])
+        return False, k4
+
+
+def remove_include_seq(k1: Seq, k2: Seq, k3: Seq):
+    """去除包含关系：输入三根特征序列元素，其中k1和k2为没有包含关系的元素，k3为原始元素"""
+    if k1.high < k2.high:
+        direction = Direction.Up
+    elif k1.high > k2.high:
+        direction = Direction.Down
+    else:
+        k4 = Seq(symbol=k3.symbol, id=k3.id, freq=k3.freq, high=k3.high, low=k3.low, start_dt=k3.start_dt,
+                 end_dt=k3.end_dt, direction=k3.direction)
+        return False, k4
+
+    # 判断 k2 和 k3 之间是否存在包含关系，有则处理
+    if (k2.high <= k3.high and k2.low >= k3.low) or (k2.high >= k3.high and k2.low <= k3.low):
+        if direction == Direction.Up:
+            high = max(k2.high, k3.high)
+            low = max(k2.low, k3.low)
+            start_dt = k2.start_dt if k2.high > k3.high else k3.start_dt
+            end_dt = k2.end_dt if k2.high > k3.high else k3.end_dt
+        elif direction == Direction.Down:
+            high = min(k2.high, k3.high)
+            low = min(k2.low, k3.low)
+            start_dt = k2.start_dt if k2.low < k3.low else k3.start_dt
+            end_dt = k2.end_dt if k2.low < k3.low else k3.end_dt
+        else:
+            raise ValueError
+
+        k4 = Seq(symbol=k3.symbol, id=k2.id, freq=k2.freq, start_dt=start_dt, end_dt=end_dt,
+                 high=high, low=low, direction=k2.direction)
+        return True, k4
+    else:
+        k4 = Seq(symbol=k3.symbol, id=k3.id, freq=k3.freq, start_dt=k3.start_dt, end_dt=k3.end_dt,
+                 high=k3.high, low=k3.low, direction=k3.direction)
         return False, k4
 
 
@@ -118,6 +153,38 @@ def check_fxs(bars: List[NewBar]) -> List[FX]:
     for i in range(1, len(bars) - 1):
         fx: FX = check_fx(bars[i - 1], bars[i], bars[i + 1])
         if isinstance(fx, FX):
+            # 这里可能隐含Bug，默认情况下，fxs本身是顶底交替的，但是对于一些特殊情况下不是这样，这是不对的。
+            # 临时处理方案，强制要求fxs序列顶底交替
+            if len(fxs) >= 2 and fx.mark == fxs[-1].mark:
+                fxs.pop()
+            fxs.append(fx)
+
+    return fxs
+
+
+def check_fx_seq(k1: Seq, k2: Seq, k3: Seq):
+    """查找特征序列分型"""
+    fx = None
+    fx_id = -1
+    if k1.high < k2.high > k3.high and k1.low < k2.low > k3.low:
+        # power = "强" if k3.close < k1.low else "弱"
+        fx = SeqFX(symbol=k1.symbol, freq=k1.freq, dt=k2.start_dt, mark='G', high=k2.high, low=k2.low,
+                   fx=k2.high, elements=[k1, k2, k3], power='', id=fx_id, direction=k1.direction)
+
+    if k1.low > k2.low < k3.low and k1.high > k2.high < k3.high:
+        # power = "强" if k3.close > k1.high else "弱"
+        fx = SeqFX(symbol=k1.symbol, freq=k1.freq, dt=k2.start_dt, mark='D', high=k2.high, low=k2.low,
+                   fx=k2.low, elements=[k1, k2, k3], power='', id=fx_id, direction=k1.direction)
+
+    return fx
+
+
+def check_fxs_seq(bars: List[Seq]) -> List[SeqFX]:
+    """输入一串无包含关系特征序列，查找其中所有分型"""
+    fxs = []
+    for i in range(1, len(bars) - 1):
+        fx: SeqFX = check_fx_seq(bars[i - 1], bars[i], bars[i + 1])
+        if isinstance(fx, SeqFX):
             # 这里可能隐含Bug，默认情况下，fxs本身是顶底交替的，但是对于一些特殊情况下不是这样，这是不对的。
             # 临时处理方案，强制要求fxs序列顶底交替
             if len(fxs) >= 2 and fx.mark == fxs[-1].mark:
@@ -208,7 +275,7 @@ def generate_bi(bi_list: List[BI], bars_ubi: List[NewBar]):
 
     :param bi_list: 笔列表
     :param bars_ubi: 已合并的k线列表
-    :return: bi_list, bars_ubi: 更新后的笔列表和中枢列表
+    :return: bi_list, bars_ubi: 更新后的笔列表和k线列表
     """
     if len(bars_ubi) < 3:
         return bi_list, bars_ubi
@@ -337,6 +404,156 @@ def check_bi(bars: List[NewBar]):
         return None, bars
 
 
+def generate_line(line_list: List[Line], seqs: List[Seq]):
+    """根据(标准特征序列)元素列表生成线段，每次生成一根线段
+
+    :param line_list: 线段列表
+    :param seqs: 已合并的(标准特征序列)元素列表
+    :return: line_list, bars_ubi: 更新后的线段列表和元素列表
+    """
+    up_seqs = [x for x in seqs if x.direction == 'up']
+    down_seqs = [x for x in seqs if x.direction == 'down']
+    if len(up_seqs) < 3 or len(down_seqs) < 3:
+        return line_list, seqs
+
+    # 查找线段
+    if not line_list or len(line_list) < 1:
+        # 第一个线段的查找
+        up_seqs_fxs = check_fxs_seq(up_seqs)
+        down_seqs_fxs = check_fxs_seq(down_seqs)
+
+        # fxs = check_fxs(bars_ubi)
+        if not up_seqs_fxs or not down_seqs_fxs:
+            return line_list, seqs
+
+        # 合并两个分型列表
+        all_fxs = []
+        pos1 = 0
+        pos2 = 0
+        while pos1 < len(up_seqs_fxs) or pos2 < len(down_seqs_fxs):
+            if pos2 == len(down_seqs_fxs) or (
+                    pos1 < len(up_seqs_fxs) and up_seqs_fxs[pos1].dt < down_seqs_fxs[pos2].dt):
+                all_fxs.append(up_seqs_fxs[pos1])
+                pos1 = pos1 + 1
+            else:
+                all_fxs.append(down_seqs_fxs[pos2])
+                pos2 = pos2 + 1
+
+        fx_a = all_fxs[0]
+        fxs_a = [x for x in all_fxs if x.mark == fx_a.mark]
+        for fx in fxs_a:
+            if (fx_a.mark == 'D' and fx.low <= fx_a.low) \
+                    or (fx_a.mark == 'G' and fx.high >= fx_a.high):
+                fx_a = fx
+        seqs = [x for x in seqs if x.start_dt >= fx_a.elements[0].start_dt]
+
+        line, seqs_ = check_line(seqs)
+        if isinstance(line, Line):
+            line_list.append(line)
+        seqs = seqs_
+        return line_list, seqs
+
+    last_line = line_list[-1]
+
+    # 如果上一线段被破坏，将上一线段的bars与bars_ubi进行合并
+    min_low_ubi = min([x.low for x in seqs[2:]])
+    max_high_ubi = max([x.high for x in seqs[2:]])
+
+    if last_line.direction == 'up' and max_high_ubi > last_line.high:
+        if min_low_ubi < last_line.low and len(line_list) > 2:
+            seqs = line_list[-2].seqs \
+                   + [x for x in line_list[-1].seqs if x.start_dt > line_list[-2].seqs[-1].end_dt] \
+                   + [x for x in seqs if x.start_dt > line_list[-1].seqs[-1].end_dt]
+            line_list.pop(-1)
+            line_list.pop(-1)
+        else:
+            seqs = last_line.seqs + [x for x in seqs if x.start_dt > last_line.seqs[-1].start_dt]
+            line_list.pop(-1)
+    elif last_line.direction == 'down' and min_low_ubi < last_line.low:
+        if max_high_ubi > last_line.high and len(line_list) > 2:
+            seqs = line_list[-2].seqs \
+                   + [x for x in line_list[-1].seqs if x.start_dt > line_list[-2].seqs[-1].end_dt] \
+                   + [x for x in seqs if x.start_dt > line_list[-1].seqs[-1].end_dt]
+            line_list.pop(-1)
+            line_list.pop(-1)
+        else:
+            seqs = last_line.seqs + [x for x in seqs if x.start_dt > last_line.seqs[-1].end_dt]
+            line_list.pop(-1)
+    else:
+        seqs = seqs
+
+    if len(seqs) > 300:
+        print("{}  未完成笔延伸超长，延伸数量: {}".format(last_line.symbol, len(seqs)))
+    line, seqs_ = check_line(seqs)
+    seqs = seqs_
+    if isinstance(line, Line):
+        line_list.append(line)
+
+    return line_list, seqs
+
+
+def check_line(seqs: List[Seq]):
+    """输入一串无包含关系特征序列，查找其中的一根线段"""
+    up_seqs = [x for x in seqs if x.direction == 'up']
+    down_seqs = [x for x in seqs if x.direction == 'down']
+    up_fxs = check_fxs_seq(up_seqs)
+    down_fxs = check_fxs_seq(down_seqs)
+    if len(up_fxs) < 2 or len(down_fxs) < 2:
+        return None, seqs
+    fx_a = up_fxs[0] if up_fxs[0].dt < down_fxs[0].dt else down_fxs[0]
+    try:
+        if fx_a.mark == 'D':
+            direction = 'up'
+            fxs_b = [x for x in up_fxs if x.mark == 'G' and x.dt > fx_a.dt and x.fx > fx_a.fx]
+            if not fxs_b:
+                return None, seqs
+            fx_b = fxs_b[0]
+            for fx in fxs_b:
+                if fx.high >= fx_b.high:
+                    fx_b = fx
+        elif fx_a.mark == 'G':
+            direction = 'down'
+            fxs_b = [x for x in down_fxs if x.mark == 'D' and x.dt > fx_a.dt and x.fx < fx_a.fx]
+            if not fxs_b:
+                return None, seqs
+            fx_b = fxs_b[0]
+            for fx in fxs_b[1:]:
+                if fx.low <= fx_b.low:
+                    fx_b = fx
+        else:
+            raise ValueError
+    except:
+        traceback.print_exc()
+        return None, seqs
+
+    seqs_a = [x for x in seqs if fx_a.elements[0].start_dt <= x.start_dt <= fx_b.elements[2].start_dt]
+    seqs_b = [x for x in seqs if x.start_dt >= fx_b.elements[0].start_dt]
+
+    # 判断fx_a和fx_b价格区间是否存在包含关系
+    ab_include = (fx_a.high > fx_b.high and fx_a.low < fx_b.low) or (fx_a.high < fx_b.high and fx_a.low > fx_b.low)
+
+    if len(seqs_a) >= 7 and not ab_include:
+        # 计算笔的相关属性
+        power_price = round(abs(fx_b.fx - fx_a.fx), 2)
+
+        # 生成Line对象，有问题！！！！
+        if direction == 'up':
+            start_dt = fx_a.elements[1].start_dt if fx_a.direction == 'up' else fx_a.elements[1].end_dt
+            end_dt = fx_b.elements[1].start_dt if fx_b.direction == 'down' else fx_b.elements[1].end_dt
+        else:
+            start_dt = fx_a.elements[1].start_dt if fx_a.direction == 'down' else fx_a.elements[1].end_dt
+            end_dt = fx_b.elements[1].start_dt if fx_b.direction == 'up' else fx_b.elements[1].end_dt
+        high = fx_a.fx if direction == 'down' else fx_b.fx
+        low = fx_a.fx if direction == 'up' else fx_b.fx
+
+        line = Line(symbol=fx_a.symbol, freq=fx_a.freq, id=-1, direction=direction, start_dt=start_dt, end_dt=end_dt,
+                    high=high, low=low, power=power_price, seqs=seqs_a, fx_a=fx_a, fx_b=fx_b)
+
+        return line, seqs_b
+    else:
+        return None, seqs
+
+
 def generate_hub(hubs: List[Hub], bi_list: List[BI]):
     """根据笔列表生成中枢，每次生成一个中枢
 
@@ -364,7 +581,7 @@ def generate_hub(hubs: List[Hub], bi_list: List[BI]):
         if not last_hub.leave:
             last_hub.leave = bi_list[pos]
         if last_hub.leave.fx_a.dt == bi_list[pos].fx_a.dt:
-            pos += 2
+            pos += 1
             continue
         if last_hub.ZD > bi_list[pos].high or last_hub.ZG < bi_list[pos].low:
             break

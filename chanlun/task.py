@@ -10,10 +10,11 @@ from typing import List
 import pandas as pd
 import numpy as np
 
-from chanlun.analyze import remove_include, check_fxs, generate_bi, generate_hub
+from chanlun.analyze import remove_include, check_fxs, generate_bi, generate_hub, remove_include_seq, generate_line
 from chanlun.config.mysql_config import MysqlConfig
-from chanlun.data.data_transfer import raw_bars_transfer, new_bars_transfer, fxs_transfer, bi_transfer, hub_transfer
-from chanlun.objects import NewBar
+from chanlun.data.data_transfer import raw_bars_transfer, new_bars_transfer, fxs_transfer, bi_transfer, hub_transfer, \
+    seq_transfer, line_transfer, bi2seq_transfer
+from chanlun.objects import NewBar, Seq
 from chanlun.utils.db_connector import MysqlUtils
 
 db = MysqlUtils(MysqlConfig.host,
@@ -211,13 +212,134 @@ def cal_bi(symbol, freq):
                     ))
 
 
+def cal_seq(symbol, freq):
+    """计算标准特征序列，并写入cl_sequence数据库表
+
+        :param symbol: 股票代码
+        :param freq: K线级别
+    """
+    # 最近向上标准特征序列
+    raw_last_up_seq_list = db.get_all(
+        'select * from cl_sequence where stock_id=\'%s\' and level=\'%s\' and direction=\'%s\' order by id desc limit 2' % (
+            symbol, freq, 'up'))
+    up_seq_list = seq_transfer(raw_last_up_seq_list, freq, symbol)
+    # 最近向下标准特征序列
+    raw_last_down_seq_list = db.get_all(
+        'select * from cl_sequence where stock_id=\'%s\' and level=\'%s\' and direction=\'%s\' order by id desc limit 2' % (
+            symbol, freq, 'down'))
+    down_seq_list = seq_transfer(raw_last_down_seq_list, freq, symbol)
+
+    # 读取未构成标准特征序列的所有笔
+    init_len = len(up_seq_list) + len(down_seq_list)
+
+    # 读取新进笔
+
+    if init_len == 0:
+        raw_bi_list = db.get_all(
+            'select * from cl_stroke where stock_id=\'%s\' and level=\'%s\'' % (symbol, freq))
+    else:
+        if len(up_seq_list) == 0:
+            last_seq = down_seq_list[-1]
+        elif len(down_seq_list) == 0:
+            last_seq = up_seq_list[-1]
+        else:
+            last_seq = up_seq_list[-1] if up_seq_list[-1].dt > down_seq_list[-1] else down_seq_list[-1]
+
+        raw_bi_list = db.get_all(
+            'select * from cl_stroke where stock_id=\'%s\' and level=\'%s\' and start_datetime>\'%s\'' % (
+                symbol, freq, last_seq.dt))
+
+    # 笔列表转化为未合并特征序列
+    arrived_seq_list = bi2seq_transfer(raw_bi_list, freq, symbol)
+
+    # 特征序列进行包含处理
+    for seq in arrived_seq_list:
+        seq_list = up_seq_list if seq.direction == 'up' else down_seq_list
+        if len(seq_list) < 2:
+            seq_list.append(Seq(symbol=seq.symbol, id=seq.id, freq=seq.freq, start_dt=seq.start_dt, end_dt=seq.end_dt,
+                                high=seq.high, low=seq.low, direction=seq.direction))
+        else:
+            k1, k2 = seq_list[-2:]
+            # 合并处理
+            has_include, k3 = remove_include_seq(k1, k2, seq)
+            if has_include:
+                seq_list[-1] = k3
+            else:
+                seq_list.append(k3)
+
+    # 合并向上特征序列和向下特征序列
+    pos1 = 0
+    pos2 = 0
+    seq_list_res = []
+    while pos1 < len(up_seq_list) or pos2 < len(down_seq_list):
+        if pos2 == len(down_seq_list) or (
+                pos1 < len(up_seq_list) and up_seq_list[pos1].start_dt < down_seq_list[pos2].start_dt):
+            seq_list_res.append(up_seq_list[pos1])
+            pos1 = pos1 + 1
+        else:
+            seq_list_res.append(down_seq_list[pos2])
+            pos2 = pos2 + 1
+
+    # 标准特征序列写入数据库
+    for i in range(len(seq_list_res)):
+        seq = seq_list_res[i]
+        if seq.id > -1:
+            db.update(
+                'update cl_sequence set start_datetime=\'%s\' and end_datetime=\'%s\' and high=%s and low=%s where id=%s' % (
+                    seq.start_dt.strftime('%Y-%m-%d %H:%M:%S'), seq.end_dt.strftime('%Y-%m-%d %H:%M:%S'), seq.high,
+                    seq.low, seq.id))
+        else:
+            db.insert(
+                'insert into cl_sequence(stock_id, level, start_datetime, end_datetime, high, low, direction) values(\'%s\',\'%s\', \'%s\','
+                '\'%s\',%s,%s,\'%s\')' % (
+                    symbol, freq, seq.start_dt.strftime('%Y-%m-%d %H:%M:%S'), seq.end_dt.strftime('%Y-%m-%d %H:%M:%S'),
+                    seq.high, seq.low, seq.direction))
+
+
 def cal_xd(symbol, freq):
     """计算线段，并写入cl_paragraph数据库表
 
         :param symbol: 股票代码
         :param freq: K线级别
     """
-    return None
+    raw_last_line_list = db.get_all(
+        'select * from cl_paragraph where stock_id=\'%s\' and level=\'%s\' order by id desc limit 2' % (symbol, freq))
+    line_list = line_transfer(raw_last_line_list, freq, symbol)
+    line_list.reverse()
+
+    for line in line_list:
+        print(line)
+        db.delete('delete from cl_paragraph where id=%s' % line.id)
+
+    init_len = len(line_list)
+
+    if init_len == 0:
+        raw_arrived_seqs = db.get_all(
+            'select * from cl_sequence where stock_id=\'%s\' and level=\'%s\'' % (symbol, freq))
+    else:
+        raw_arrived_seqs = db.get_all('select * from cl_sequence where stock_id=\'%s\' and level=\'%s\' and '
+                                      'start_datetime>=\'%s\'' % (
+                                      symbol, freq, line_list[-1].fx_a.elements[0].start_dt))
+    arrived_seqs = seq_transfer(raw_arrived_seqs, freq, symbol)
+
+    # 生成线段
+    seqs = []
+    for seq in arrived_seqs:
+        seqs.append(seq)
+        line_list, seqs = generate_line(line_list, seqs)
+
+    for i in range(len(line_list)):
+        line = line_list[i]
+
+        elements_str = line.seqs[0].start_dt.strftime('%Y-%m-%d %H:%M:%S') + ',' + line.seqs[-1].end_dt.strftime(
+            '%Y-%m-%d %H:%M:%S')
+        fx_a_ids = str(line.fx_a.elements[0].id) + ',' + str(line.fx_a.elements[1].id) + ',' + str(line.fx_a.elements[2].id)
+        fx_b_ids = str(line.fx_b.elements[0].id) + ',' + str(line.fx_b.elements[1].id) + ',' + str(line.fx_b.elements[2].id)
+        db.insert(
+            'insert into cl_paragraph(stock_id, level, direction, start_datetime, end_datetime, high, low, elements, '
+            'fx_a_ids, fx_b_ids) values(\'%s\',\'%s\',\'%s\',\'%s\',\'%s\',%s,%s,\'%s\',\'%s\',\'%s\')' % (
+                symbol, freq, line.direction, line.start_dt.strftime('%Y-%m-%d %H:%M:%S'),
+                line.end_dt.strftime('%Y-%m-%d %H:%M:%S'), line.high, line.low, elements_str, fx_a_ids, fx_b_ids))
 
 
 def cal_zh(symbol, freq, component_type):
@@ -239,7 +361,7 @@ def cal_zh(symbol, freq, component_type):
                 symbol, freq))
     else:
         raw_arrived_bi_list = db.get_all(
-            'select * from cl_stroke where stock_id=\'%s\' and level=\'%s\' and start_datetime>\'%s\'' % (
+            'select * from cl_stroke where stock_id=\'%s\' and level=\'%s\' and start_datetime>=\'%s\'' % (
                 symbol, freq, hubs[-1].elements[-1].fx_b.dt))
 
     arrived_bi_list = bi_transfer(raw_arrived_bi_list, freq, symbol)
@@ -256,8 +378,6 @@ def cal_zh(symbol, freq, component_type):
             continue
         start_dt = hub.elements[0].fx_a.dt.strftime('%Y-%m-%d %H:%M:%S')
         end_dt = hub.elements[-1].fx_b.dt.strftime('%Y-%m-%d %H:%M:%S')
-        print(hub.elements)
-        print(start_dt, end_dt)
         entry_id = -1 if not hub.entry else hub.entry.id
         leave_id = -1 if not hub.leave else hub.leave.id
         if hub.id >= 0:
@@ -267,7 +387,7 @@ def cal_zh(symbol, freq, component_type):
             db.insert(
                 'insert into cl_omphalos(stock_id, level, start_datetime, end_datetime, zd, zg, gg, dd, '
                 'entry_segment, leave_segment, type) values(\'%s\',\'%s\',\'%s\',\'%s\',%s,%s,%s,%s,%s,%s,\'%s\')' % (
-                    symbol, freq, start_dt, end_dt, hub.ZG, hub.ZD, hub.GG, hub.DD, entry_id, leave_id,
+                    symbol, freq, start_dt, end_dt, hub.ZD, hub.ZG, hub.GG, hub.DD, entry_id, leave_id,
                     component_type))
 
 
@@ -504,3 +624,4 @@ if __name__ == '__main__':
 
     # 测试买卖点
     rebuild_bs_point(symbol, freq)
+

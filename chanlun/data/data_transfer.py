@@ -11,9 +11,9 @@ import numpy as np
 
 from chanlun.analyze import check_fx
 from chanlun.config.mysql_config import MysqlConfig
-from chanlun.objects import RawBar, NewBar, BI, Hub
+from chanlun.objects import RawBar, NewBar, BI, Hub, Line, Seq
 from chanlun.utils.db_connector import MysqlUtils
-
+from chanlun.analyze import check_fx_seq
 db = MysqlUtils(MysqlConfig.host,
                 MysqlConfig.port,
                 MysqlConfig.user,
@@ -221,3 +221,111 @@ def hub_transfer(db_data, freq, symbol):
 
         hub_list.append(hub)
     return hub_list
+
+
+def seq_transfer(db_data, freq, symbol):
+    """标准特征序列数据转化为Seq列表
+
+        :param db_data: 数据库中获取的标准特征序列数据
+        :param freq: K线级别
+        :param symbol: 股票代码
+        :return:Seq列表
+    """
+    bars = []
+    if not db_data:
+        return bars
+
+    x = np.array(db_data)
+    if x.ndim == 1:
+        db_data = [db_data]
+
+    for row in db_data:
+        start_dt = pd.to_datetime(row[6])
+        end_dt = pd.to_datetime(row[7])
+
+        high = round(float(row[3]), 2)
+        low = round(float(row[4]), 2)
+        direction = row[5]
+        bars.append(
+            Seq(symbol=symbol, id=row[0], start_dt=start_dt, end_dt=end_dt, freq=freq, direction=direction, high=high,
+                low=low))
+    return bars
+
+
+def bi2seq_transfer(db_data, freq, symbol):
+    """笔列表数据转化为Seq列表
+
+        :param db_data: 数据库中获取的bi数据
+        :param freq: K线级别
+        :param symbol: 股票代码
+        :return:Seq列表
+    """
+    seqs = []
+    if not db_data:
+        return seqs
+
+    x = np.array(db_data)
+    if x.ndim == 1:
+        db_data = [db_data]
+
+    for row in db_data:
+        start_dt = pd.to_datetime(row[6])
+        end_dt = pd.to_datetime(row[7])
+        high = round(float(row[9]), 2)
+        low = round(float(row[10]), 2)
+        direction = row[5]
+        seqs.append(
+            Seq(symbol=symbol, id=-1, start_dt=start_dt, end_dt=end_dt, freq=freq, direction=direction, high=high,
+                low=low))
+    return seqs
+
+
+def line_transfer(db_data, freq, symbol):
+    """线段数据转化为Line列表
+
+        :param db_data: 数据库中获取的线段数据
+        :param freq: K线级别
+        :param symbol: 股票代码
+        :return: Line列表
+    """
+    line_list = []
+    if not db_data:
+        return line_list
+
+    x = np.array(db_data)
+    if x.ndim == 1:
+        db_data = [db_data]
+
+    for raw_line in db_data:
+        direction = raw_line[3]
+        start_dt = raw_line[4]
+        end_dt = raw_line[5]
+        high = raw_line[8]
+        low = raw_line[9]
+        power_price = round(abs(high - low), 2)
+
+        # 查找特征序列
+        time_range = raw_line[11].split(",")
+        raw_inside_seqs = db.get_all(
+            'select * from cl_sequence where stock_id=\'%s\' and level=\'%s\' and start_datetime>=\'%s\' and '
+            'end_datetime<=\'%s\'' % (
+                symbol, freq, time_range[0], time_range[1]))
+        inside_seqs = seq_transfer(raw_inside_seqs, freq, symbol)
+
+        # 查找分型
+        fx_a_ids = raw_line[12].split(",")
+        fx_b_ids = raw_line[12].split(",")
+        fx_a_seqs = seq_transfer(db.get_all('select * from cl_sequence where id in (%s, %s, %s)' % (
+            int(fx_a_ids[0]), int(fx_a_ids[1]), int(fx_a_ids[2]))), symbol, freq)
+        fx_b_seqs = seq_transfer(db.get_all('select * from cl_sequence where id in (%s, %s, %s)' % (
+            int(fx_b_ids[0]), int(fx_b_ids[1]), int(fx_b_ids[2]))), symbol, freq)
+        fx_a = check_fx_seq(fx_a_seqs[0], fx_a_seqs[1], fx_a_seqs[2])
+        fx_b = check_fx_seq(fx_b_seqs[0], fx_b_seqs[1], fx_b_seqs[2])
+
+        # 生成线段
+        line = Line(symbol=symbol, freq=freq, id=raw_line[0], direction=direction, start_dt=start_dt, end_dt=end_dt,
+                    high=high, low=low, power=power_price, seqs=inside_seqs, fx_a=fx_a, fx_b=fx_b)
+
+        line_list.append(line)
+
+    return line_list

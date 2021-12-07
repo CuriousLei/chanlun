@@ -51,6 +51,7 @@ class FX:
     power: str
     elements: List[NewBar]
 
+
 @dataclass
 class FakeBI:
     """虚拟笔：主要为笔的内部分析提供便利"""
@@ -77,10 +78,46 @@ class BI:
     bars: List[NewBar] = None
 
 @dataclass
-class Line:
+class Seq:
+    """特征序列"""
     symbol: str
     id: int
+    start_dt: datetime
+    end_dt: datetime
+    freq: str
     direction: str
+    high: [float, int]
+    low: [float, int]
+
+@dataclass
+class SeqFX:
+    symbol: str
+    freq: str
+    id: int
+    dt: datetime
+    mark: str
+    high: [float, int]
+    low: [float, int]
+    fx: [float, int]
+    power: str
+    direction: str
+    elements: List[Seq]
+
+@dataclass
+class Line:
+    """线段"""
+    symbol: str
+    freq: str
+    id: int
+    direction: str
+    start_dt: datetime
+    end_dt: datetime
+    high: float = None
+    low: float = None
+    power: float = None
+    seqs: List[Seq] = None
+    fx_a: SeqFX = None  # 线段开始的分型
+    fx_b: SeqFX = None  # 线段结束的分型
 
 @dataclass
 class Hub:

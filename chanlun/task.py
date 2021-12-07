@@ -5,12 +5,9 @@
 # @File    : task.py
 # @Software: PyCharm
 from datetime import datetime
-from typing import List
 
-import pandas as pd
-import numpy as np
-
-from chanlun.analyze import remove_include, check_fxs, generate_bi, generate_hub, remove_include_seq, generate_line
+from chanlun.analyze import remove_include, check_fxs, generate_bi, generate_biHub, remove_include_seq, \
+    generate_line_by_bi, generate_line_by_seq, generate_lineHub
 from chanlun.config.mysql_config import MysqlConfig
 from chanlun.data.data_transfer import raw_bars_transfer, new_bars_transfer, fxs_transfer, bi_transfer, hub_transfer, \
     seq_transfer, line_transfer, bi2seq_transfer
@@ -280,6 +277,7 @@ def cal_seq(symbol, freq):
             seq_list_res.append(down_seq_list[pos2])
             pos2 = pos2 + 1
 
+    seq_list_res = arrived_seq_list
     # 标准特征序列写入数据库
     for i in range(len(seq_list_res)):
         seq = seq_list_res[i]
@@ -304,11 +302,10 @@ def cal_xd_by_seq(symbol, freq):
     """
     raw_last_line_list = db.get_all(
         'select * from cl_paragraph where stock_id=\'%s\' and level=\'%s\' order by id desc limit 2' % (symbol, freq))
-    line_list = line_transfer(raw_last_line_list, freq, symbol)
+    line_list = line_transfer(raw_last_line_list, freq, symbol, True)
     line_list.reverse()
 
     for line in line_list:
-        print(line)
         db.delete('delete from cl_paragraph where id=%s' % line.id)
 
     init_len = len(line_list)
@@ -326,7 +323,7 @@ def cal_xd_by_seq(symbol, freq):
     seqs = []
     for seq in arrived_seqs:
         seqs.append(seq)
-        line_list, seqs = generate_line(line_list, seqs)
+        line_list, seqs = generate_line_by_seq(line_list, seqs)
 
     for i in range(len(line_list)):
         line = line_list[i]
@@ -352,35 +349,57 @@ def cal_zh(symbol, freq, component_type):
         :param component_type: 构件（bi/xd）
     """
     # 读取最近的中枢
+    global points
     raw_last_hub = db.get_one(
-        'select * from cl_omphalos where stock_id=\'%s\' and level=\'%s\' order by id desc limit 1' % (symbol, freq))
-    hubs = hub_transfer(raw_last_hub, freq, symbol)
+        'select * from cl_omphalos where stock_id=\'%s\' and level=\'%s\' and type=\'%s\' order by id desc limit 1' % (
+            symbol, freq, component_type))
+    hubs = hub_transfer(raw_last_hub, freq, symbol, component_type)
 
-    # 获取最近中枢之后的笔或者线段
-    if len(hubs) == 0:
-        raw_arrived_bi_list = db.get_all(
-            'select * from cl_stroke where stock_id=\'%s\' and level=\'%s\'' % (
-                symbol, freq))
-    else:
-        raw_arrived_bi_list = db.get_all(
-            'select * from cl_stroke where stock_id=\'%s\' and level=\'%s\' and start_datetime>=\'%s\'' % (
-                symbol, freq, hubs[-1].elements[-1].fx_b.dt))
+    if component_type == 'bi':
+        # 获取最近中枢之后的笔
+        if len(hubs) == 0:
+            raw_arrived_bi_list = db.get_all(
+                'select * from cl_stroke where stock_id=\'%s\' and level=\'%s\'' % (symbol, freq))
+        else:
+            raw_arrived_bi_list = db.get_all(
+                'select * from cl_stroke where stock_id=\'%s\' and level=\'%s\' and start_datetime>=\'%s\'' % (
+                    symbol, freq, hubs[-1].elements[-1].fx_b.dt))
 
-    arrived_bi_list = bi_transfer(raw_arrived_bi_list, freq, symbol)
+        arrived_bi_list = bi_transfer(raw_arrived_bi_list, freq, symbol)
 
-    # 生成中枢
-    bars = []
-    points = []
-    for bar in arrived_bi_list:
-        bars.append(bar)
-        hubs, bars, points = generate_hub(hubs, bars, points)
+        # 生成中枢
+        bars = []
+        points = []
+        for bar in arrived_bi_list:
+            bars.append(bar)
+            hubs, bars, points = generate_biHub(hubs, bars, points)
+    elif component_type == 'xd':
+        # 获取最近中枢之后的笔
+        if len(hubs) == 0:
+            raw_arrived_line_list = db.get_all(
+                'select * from cl_paragraph where stock_id=\'%s\' and level=\'%s\'' % (symbol, freq))
+        else:
+            raw_arrived_line_list = db.get_all(
+                'select * from cl_paragraph where stock_id=\'%s\' and level=\'%s\' and start_datetime>=\'%s\'' % (
+                    symbol, freq, hubs[-1].elements[-1].fx_b.dt))
+        arrived_line_list = line_transfer(raw_arrived_line_list, freq, symbol, False)
+
+        bars = []
+        points = []
+        for bar in arrived_line_list:
+            bars.append(bar)
+            hubs, bars, points = generate_lineHub(hubs, bars, points)
 
     # 中枢写入数据库
     for hub in hubs:
         if not hub:
             continue
-        start_dt = hub.elements[0].fx_a.dt.strftime('%Y-%m-%d %H:%M:%S')
-        end_dt = hub.elements[-1].fx_b.dt.strftime('%Y-%m-%d %H:%M:%S')
+        if component_type == 'bi':
+            start_dt = hub.elements[0].fx_a.dt.strftime('%Y-%m-%d %H:%M:%S')
+            end_dt = hub.elements[-1].fx_b.dt.strftime('%Y-%m-%d %H:%M:%S')
+        else:
+            start_dt = hub.elements[0].start_dt
+            end_dt = hub.elements[-1].end_dt
         entry_id = -1 if not hub.entry else hub.entry.id
         leave_id = -1 if not hub.leave else hub.leave.id
         if hub.id >= 0:
@@ -395,8 +414,8 @@ def cal_zh(symbol, freq, component_type):
     # 三类买卖点写入数据库
     for point in points:
         db.insert(
-            'insert into cl_point_result(stock_id, level, point, type, high, low) values(\'%s\',\'%s\',\'%s\',\'%s\','
-            '%s,%s)' % (symbol, freq, point.dt.strftime('%Y-%m-%d %H:%M:%S'), point.type, point.high, point.low))
+            'insert into cl_point_result(stock_id, level, point, type, high, low, component_type) values(\'%s\',\'%s\',\'%s\',\'%s\','
+            '%s,%s,\'%s\')' % (symbol, freq, point.dt.strftime('%Y-%m-%d %H:%M:%S'), point.type, point.high, point.low, component_type))
 
 
 def cal_bs_point(symbol, freq):
@@ -417,10 +436,67 @@ def cal_bs_point(symbol, freq):
     return None
 
 
+def cal_xd_by_bi(symbol, freq):
+    """根据笔计算线段，并写入cl_paragraph数据库表
+
+        :param symbol: 股票代码
+        :param freq: K线级别
+    """
+    raw_last_line_list = db.get_all(
+        'select * from cl_paragraph where stock_id=\'%s\' and level=\'%s\' order by id desc limit 2' % (symbol, freq))
+    line_list = line_transfer(raw_last_line_list, freq, symbol, False)
+    line_list.reverse()
+
+    for line in line_list:
+        db.delete('delete from cl_paragraph where id=%s' % line.id)
+
+    init_len = len(line_list)
+
+    if init_len == 0:
+        raw_arrived_bi_list = db.get_all(
+            'select * from cl_stroke where stock_id=\'%s\' and level=\'%s\'' % (symbol, freq))
+    else:
+        next_bi = db.get_one('select * from cl_stroke where stock_id=\'%s\' and level=\'%s\' and '
+                             'start_datetime=\'%s\'' % (symbol, freq, line_list[-1].end_dt))
+        if next_bi is None:
+            line_list.pop(-1)
+        if len(line_list) == 0:
+            raw_arrived_bi_list = db.get_all(
+                'select * from cl_stroke where stock_id=\'%s\' and level=\'%s\'' % (symbol, freq))
+        else:
+            raw_arrived_bi_list = db.get_all('select * from cl_stroke where stock_id=\'%s\' and level=\'%s\' and '
+                                             'start_datetime>=\'%s\'' % (symbol, freq, line_list[-1].end_dt))
+    arrived_bis = bi_transfer(raw_arrived_bi_list, freq, symbol)
+
+    # 生成线段
+    bi_list = []
+    for bi in arrived_bis:
+        bi_list.append(bi)
+        line_list, bi_list = generate_line_by_bi(line_list, bi_list)
+
+    for i in range(len(line_list)):
+        line = line_list[i]
+
+        elements_str = (line.seqs[0].start_dt.strftime('%Y-%m-%d %H:%M:%S') + ',' + line.seqs[-1].end_dt.strftime(
+            '%Y-%m-%d %H:%M:%S')) if line.seqs is not None and len(line.seqs) > 1 else ""
+        fx_a_ids = (str(line.fx_a.elements[0].id) + ',' + str(line.fx_a.elements[1].id) + ',' + str(
+            line.fx_a.elements[2].id)) if line.fx_a is not None else ""
+        fx_b_ids = str(line.fx_b.elements[0].id) + ',' + str(line.fx_b.elements[1].id) + ',' + str(
+            line.fx_b.elements[2].id) if line.fx_b is not None else ""
+        db.insert(
+            'insert into cl_paragraph(stock_id, level, direction, start_datetime, end_datetime, high, low, elements, '
+            'fx_a_ids, fx_b_ids) values(\'%s\',\'%s\',\'%s\',\'%s\',\'%s\',%s,%s,\'%s\',\'%s\',\'%s\')' % (
+                symbol, freq, line.direction, line.start_dt.strftime('%Y-%m-%d %H:%M:%S'),
+                line.end_dt.strftime('%Y-%m-%d %H:%M:%S'), line.high, line.low, elements_str, fx_a_ids, fx_b_ids))
+
+
 if __name__ == '__main__':
     symbol = '600809.XSHG'
-    freq = '60m'
+    # freq = '60m'
     # freq = '1d'
+    # freq = '30m'
+    # freq = '5m'
+    freq = '1m'
 
     # 计算K线合并
     # cal_kx(symbol, freq)
@@ -434,17 +510,22 @@ if __name__ == '__main__':
     # cal_bi(symbol, freq)
     # print('笔计算完成')
 
-    # 计算中枢
-    # cal_zh(symbol, freq, 'bi')
-    # print('中枢计算完成')
+    # 计算笔中枢
+    cal_zh(symbol, freq, 'bi')
+    print('笔中枢计算完成')
+
 
     # 计算标准特征序列
     # cal_seq(symbol, freq)
     # print('标准特征序列计算完成')
 
     # 根据特征序列计算线段
-    cal_xd_by_seq(symbol, freq)
+    # cal_xd_by_seq(symbol, freq)
 
     # 根据笔计算线段
     # cal_xd_by_bi(symbol, freq)
-    print('线段计算完成')
+    # print('线段计算完成')
+
+    # 计算线段中枢
+    cal_zh(symbol, freq, 'xd')
+    print('线段中枢计算完成')

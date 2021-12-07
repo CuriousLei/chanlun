@@ -91,6 +91,7 @@ class Seq:
 
 @dataclass
 class SeqFX:
+    """特征序列分型"""
     symbol: str
     freq: str
     id: int
@@ -120,7 +121,7 @@ class Line:
     fx_b: SeqFX = None  # 线段结束的分型
 
 @dataclass
-class Hub:
+class BiHub:
     """笔构成的中枢"""
     id: int
     symbol: str
@@ -132,6 +133,20 @@ class Hub:
     entry: BI = None
     leave: BI = None
     elements: List[BI] = None # 奇数位的笔
+
+@dataclass
+class LineHub:
+    """线段构成的中枢"""
+    id: int
+    symbol: str
+    freq: str
+    ZG: float
+    ZD: float
+    GG: float
+    DD: float
+    entry: Line = None
+    leave: Line = None
+    elements: List[Line] = None # 奇数位的笔
 
 @dataclass
 class Point:

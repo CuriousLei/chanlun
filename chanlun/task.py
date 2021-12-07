@@ -6,6 +6,8 @@
 # @Software: PyCharm
 from datetime import datetime
 
+import numpy as np
+
 from chanlun.analyze import remove_include, check_fxs, generate_bi, generate_biHub, remove_include_seq, \
     generate_line_by_bi, generate_line_by_seq, generate_lineHub
 from chanlun.config.mysql_config import MysqlConfig
@@ -13,6 +15,7 @@ from chanlun.data.data_transfer import raw_bars_transfer, new_bars_transfer, fxs
     seq_transfer, line_transfer, bi2seq_transfer
 from chanlun.objects import NewBar, Seq
 from chanlun.utils.db_connector import MysqlUtils
+import talib as tl
 
 db = MysqlUtils(MysqlConfig.host,
                 MysqlConfig.port,
@@ -176,36 +179,37 @@ def cal_bi(symbol, freq):
 
     for i in range(len(bi_list)):
         bi = bi_list[i]
+        macd = cal_macd_area(symbol, freq, bi.fx_a.dt, bi.fx_b.dt)
         state = 'done' if i < len(bi_list) - 2 else 'undone'
         if bi.id >= 0:
             if state == 'done':
                 done_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 db.update(
                     'update cl_stroke set fx_a=%s , fx_b=%s , direction=\'%s\' , start_datetime=\'%s\' , '
-                    'end_datetime=\'%s\' , high=%s , low=%s , state=\'%s\' , done_time=\'%s\' where id=\'%s\'' % (
+                    'end_datetime=\'%s\' , high=%s , low=%s , state=\'%s\' , done_time=\'%s\', macd=%s where id=\'%s\'' % (
                         bi.fx_a.id, bi.fx_b.id, bi.direction, bi.fx_a.dt.strftime('%Y-%m-%d %H:%M:%S'),
-                        bi.fx_b.dt.strftime('%Y-%m-%d %H:%M:%S'), bi.high, bi.low, state, done_time, bi.id))
+                        bi.fx_b.dt.strftime('%Y-%m-%d %H:%M:%S'), bi.high, bi.low, state, done_time, macd, bi.id))
             else:
                 db.update(
                     'update cl_stroke set fx_a=%s , fx_b=%s , direction=\'%s\' , start_datetime=\'%s\' , '
-                    'end_datetime=\'%s\' , high=%s , low=%s , state=\'%s\' where id=\'%s\'' % (
+                    'end_datetime=\'%s\' , high=%s , low=%s , state=\'%s\', macd=%s where id=\'%s\'' % (
                         bi.fx_a.id, bi.fx_b.id, bi.direction, bi.fx_a.dt.strftime('%Y-%m-%d %H:%M:%S'),
-                        bi.fx_b.dt.strftime('%Y-%m-%d %H:%M:%S'), bi.high, bi.low, state, bi.id))
+                        bi.fx_b.dt.strftime('%Y-%m-%d %H:%M:%S'), bi.high, bi.low, state, macd, bi.id))
         else:
             if state == 'done':
                 done_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 db.insert(
                     'insert into cl_stroke(stock_id, level, fx_a, fx_b, direction, start_datetime, end_datetime, high, '
-                    'low, state, done_time) values (\'%s\',\'%s\',%s, %s,\'%s\',\'%s\',\'%s\',%s,%s,\'%s\',\'%s\')' % (
+                    'low, state, done_time, macd) values (\'%s\',\'%s\',%s, %s,\'%s\',\'%s\',\'%s\',%s,%s,\'%s\',\'%s\',%s)' % (
                         symbol, freq, bi.fx_a.id, bi.fx_b.id, bi.direction, bi.fx_a.dt.strftime('%Y-%m-%d %H:%M:%S'),
-                        bi.fx_b.dt.strftime('%Y-%m-%d %H:%M:%S'), bi.high, bi.low, state, done_time
+                        bi.fx_b.dt.strftime('%Y-%m-%d %H:%M:%S'), bi.high, bi.low, state, done_time, macd
                     ))
             else:
                 db.insert(
                     'insert into cl_stroke(stock_id, level, fx_a, fx_b, direction, start_datetime, end_datetime, high, '
-                    'low, state) values (\'%s\',\'%s\',%s, %s,\'%s\',\'%s\',\'%s\',%s,%s,\'%s\')' % (
+                    'low, state, macd) values (\'%s\',\'%s\',%s, %s,\'%s\',\'%s\',\'%s\',%s,%s,\'%s\',%s)' % (
                         symbol, freq, bi.fx_a.id, bi.fx_b.id, bi.direction, bi.fx_a.dt.strftime('%Y-%m-%d %H:%M:%S'),
-                        bi.fx_b.dt.strftime('%Y-%m-%d %H:%M:%S'), bi.high, bi.low, state
+                        bi.fx_b.dt.strftime('%Y-%m-%d %H:%M:%S'), bi.high, bi.low, state, macd
                     ))
 
 
@@ -483,20 +487,43 @@ def cal_xd_by_bi(symbol, freq):
             line.fx_a.elements[2].id)) if line.fx_a is not None else ""
         fx_b_ids = str(line.fx_b.elements[0].id) + ',' + str(line.fx_b.elements[1].id) + ',' + str(
             line.fx_b.elements[2].id) if line.fx_b is not None else ""
+        macd = cal_macd_area(symbol, freq, line.start_dt, line.end_dt)
         db.insert(
             'insert into cl_paragraph(stock_id, level, direction, start_datetime, end_datetime, high, low, elements, '
-            'fx_a_ids, fx_b_ids) values(\'%s\',\'%s\',\'%s\',\'%s\',\'%s\',%s,%s,\'%s\',\'%s\',\'%s\')' % (
+            'fx_a_ids, fx_b_ids, macd) values(\'%s\',\'%s\',\'%s\',\'%s\',\'%s\',%s,%s,\'%s\',\'%s\',\'%s\',\'%s\')' % (
                 symbol, freq, line.direction, line.start_dt.strftime('%Y-%m-%d %H:%M:%S'),
-                line.end_dt.strftime('%Y-%m-%d %H:%M:%S'), line.high, line.low, elements_str, fx_a_ids, fx_b_ids))
+                line.end_dt.strftime('%Y-%m-%d %H:%M:%S'), line.high, line.low, elements_str, fx_a_ids, fx_b_ids, macd))
+
+def cal_macd_area(symbol, freq, start_dt, end_dt):
+    table_name = symbol.replace(".", "_") + "_" + freq
+    k_left_list = db.get_all('select * from %s where Date<\'%s\' order by Date desc limit 40' % (table_name, start_dt))
+    left_bars = raw_bars_transfer(k_left_list, symbol, freq)
+    left_bars.reverse()
+    k_right_list = db.get_all('select * from %s where Date>=\'%s\' and Date <= \'%s\'' % (table_name, start_dt, end_dt))
+    right_bars = raw_bars_transfer(k_right_list, symbol, freq)
+    k_num = len(right_bars)
+
+    bars = left_bars + right_bars
 
 
+    # 计算macd
+    dif, dea, macd = tl.MACD(np.array([bar.close for bar in bars]), fastperiod=12, slowperiod=26, signalperiod=9)
+    macd = macd[len(macd)-k_num:]
+    sum = 0
+    for item in macd:
+        if np.isnan(item):
+            item = 0
+        sum += abs(item)
+
+    return sum
 if __name__ == '__main__':
+    freqs = ['1d', '60m', '30m', '5m', '1m']
     symbol = '600809.XSHG'
     # freq = '60m'
-    # freq = '1d'
+    freq = '1d'
     # freq = '30m'
     # freq = '5m'
-    freq = '1m'
+    # freq = '1m'
 
     # 计算K线合并
     # cal_kx(symbol, freq)
@@ -510,9 +537,15 @@ if __name__ == '__main__':
     # cal_bi(symbol, freq)
     # print('笔计算完成')
 
+    # 批量计算笔
+    # for freq in freqs:
+    #     cal_bi(symbol, freq)
+    #     print(freq+'笔计算完成')
+
     # 计算笔中枢
-    cal_zh(symbol, freq, 'bi')
-    print('笔中枢计算完成')
+    # cal_zh(symbol, freq, 'bi')
+    # print('笔中枢计算完成')
+
 
 
     # 计算标准特征序列
@@ -526,6 +559,11 @@ if __name__ == '__main__':
     # cal_xd_by_bi(symbol, freq)
     # print('线段计算完成')
 
+    # 批量计算线段
+    for freq in freqs:
+        cal_xd_by_bi(symbol, freq)
+        print(freq+'线段计算完成')
+
     # 计算线段中枢
-    cal_zh(symbol, freq, 'xd')
-    print('线段中枢计算完成')
+    # cal_zh(symbol, freq, 'xd')
+    # print('线段中枢计算完成')

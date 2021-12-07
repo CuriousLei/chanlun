@@ -15,7 +15,7 @@ import MySQLdb
 from MySQLdb.cursors import DictCursor
 from DBUtils.PooledDB import PooledDB
 #from PooledDB import PooledDB
-import Config
+from config import Config
 
 """
 Config是一些数据库的配置文件

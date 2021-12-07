@@ -277,6 +277,10 @@ def cl_trend(symbol, freq):
         :param symbol: 股票代码
         :param freq: K线级别
     """
+    # 获取最新的中枢
+    hubs = db.get_all(
+        'select * from cl_omphalos where stock_id=\'%s\' and level=\'%s\' order by id' % (symbol, freq))
+
     return None
 
 
@@ -499,4 +503,4 @@ if __name__ == '__main__':
     # print('买卖点计算完成')
 
     # 测试买卖点
-    # rebuild_bs_point(symbol, freq)
+    rebuild_bs_point(symbol, freq)
